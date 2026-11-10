@@ -1,0 +1,10 @@
+# Not uploaded by `gcloud run deploy --source .` (see deploy.sh).
+.gcloudignore
+.git/
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.example
+signup.db
