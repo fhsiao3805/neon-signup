@@ -114,7 +114,8 @@ def migrate_weekday_bookings(db):
 
 # --- Sign-up sheet ----------------------------------------------------------
 
-DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+# The week runs Monday to Sunday.
+DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 # Half-hour slots from 2:00 pm to 4:00 pm, stored as 24-hour "HH:MM" strings.
 SLOT_TIMES = ["14:00", "14:30", "15:00", "15:30"]
 
