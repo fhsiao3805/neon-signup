@@ -4,6 +4,7 @@ import re
 import sys
 import uuid
 from datetime import timedelta
+from io import BytesIO
 from pathlib import Path
 
 os.chdir(Path(__file__).resolve().parent)
@@ -205,10 +206,119 @@ login("alice")
 r = c.get(week)
 assert "Taken by <strong>bob</strong>" in body(r), body(r)
 
-# bob cancels his own booking and the slot is free again.
+# --- Attachments -----------------------------------------------------------
+# An in-memory stand-in for the Cloud Storage bucket, so the test needs no
+# Google Cloud credentials.
+
+class FakeStorage:
+    def __init__(self):
+        self.files = {}
+
+    def put(self, key, data, content_type):
+        self.files[key] = (data, content_type)
+
+    def get(self, key):
+        return self.files.get(key)
+
+    def delete(self, key):
+        self.files.pop(key, None)
+
+fake = FakeStorage()
+appmod.storage = fake
+MAX = appmod.MAX_ATTACHMENT_BYTES
+PDF = b"%PDF-1.4\n" + b"x" * 1000
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * (MAX - 8)              # exactly 5 MB
+
+def attach(slot, data, name):
+    return c.post("/attach", data={**slot, "file": (BytesIO(data), name)},
+                  content_type="multipart/form-data", follow_redirects=True)
+
+def booking_row(slot):
+    with psycopg.connect(appmod.DATABASE_URL) as conn:
+        return conn.execute("SELECT id, attachment FROM bookings WHERE day = %s AND start = %s",
+                            (slot["day"], slot["start"])).fetchone()
+
+# bob attaches a PDF to his booking; the name is cleaned up and stored.
+login("bob")
+r = c.get(week)
+assert ">Attach file</button>" in body(r) and "up to 5 MB" in body(r), body(r)
+r = attach(slot, PDF, "../my notes.pdf")
+assert f"Attached my_notes.pdf to {when}" in body(r), body(r)
+booking_id, name = booking_row(slot)
+assert name == "my_notes.pdf", name
+key = appmod.attachment_key(booking_id)
+assert fake.files[key] == (PDF, "application/pdf"), fake.files.keys()
+file_url = f"/attachment/{booking_id}"
+assert f'href="{file_url}"' in body(r) and ">Replace file</button>" in body(r), body(r)
+
+# The owner can open it.
+r = c.get(file_url)
+assert r.status_code == 200 and r.data == PDF and r.mimetype == "application/pdf", r
+assert r.headers["X-Content-Type-Options"] == "nosniff", r.headers
+assert "my_notes.pdf" in r.headers["Content-Disposition"], r.headers
+
+# Wrong types, files over 5 MB, and a missing file are refused; the PDF stays.
+r = attach(slot, b"just some text", "fake.pdf")
+assert "Only PDF files and images" in body(r), body(r)
+r = attach(slot, b'<svg xmlns="http://www.w3.org/2000/svg"></svg>', "pic.svg")
+assert "Only PDF files and images" in body(r), body(r)
+r = attach(slot, PDF[:9] + b"x" * (MAX - 8), "big.pdf")        # 5 MB + 1 byte
+assert "too large" in body(r), body(r)
+r = attach(slot, PDF[:9] + b"x" * (6 * 1024 * 1024), "huge.pdf")
+assert "too large" in body(r), body(r)
+r = c.post("/attach", data=slot, content_type="multipart/form-data", follow_redirects=True)
+assert "Choose a file" in body(r), body(r)
+assert booking_row(slot)[1] == "my_notes.pdf" and fake.files[key][0] == PDF
+
+# An image of exactly 5 MB replaces the PDF; its type comes from its bytes.
+r = attach(slot, PNG, "photo.jpeg")
+assert "Attached photo.png" in body(r), body(r)
+assert booking_row(slot)[1] == "photo.png" and fake.files[key] == (PNG, "image/png")
+
+# Files cannot be attached to past slots or to free slots.
+r = attach({"day": past_monday.isoformat(), "start": "14:30"}, PDF, "a.pdf")
+assert "in the past" in body(r), body(r)
+r = attach({"day": monday.isoformat(), "start": "14:00"}, PDF, "a.pdf")
+assert "no booking in that slot" in body(r), body(r)
+
+# Another user can neither open the file nor attach one to bob's booking.
+login("carol")
+r = c.get(file_url)
+assert r.status_code == 404, r.status_code
+r = c.get(week)
+assert "/attachment/" not in body(r) and "photo.png" not in body(r), body(r)
+r = attach(slot, PDF, "mine.pdf")
+assert "no booking in that slot" in body(r), body(r)
+assert booking_row(slot)[1] == "photo.png" and fake.files[key][1] == "image/png"
+
+# Nobody can open it without logging in.
+c.post("/logout")
+r = c.get(file_url, follow_redirects=True)
+assert "Please log in first" in body(r), body(r)
+
+# The administrator sees the link and can open the file.
+login("alice")
+r = c.get(week)
+assert f'href="{file_url}"' in body(r) and "photo.png" in body(r), body(r)
+r = c.get(file_url)
+assert r.status_code == 200 and r.data == PNG and r.mimetype == "image/png", r
+r = c.get("/attachment/999999")
+assert r.status_code == 404, r.status_code
+
+# Without ATTACHMENTS_BUCKET the feature is switched off.
+appmod.storage = None
+login("bob")
+r = c.get(week)
+assert ">Attach file</button>" not in body(r) and ">Replace file</button>" not in body(r), body(r)
+r = attach(slot, PDF, "a.pdf")
+assert "Attachments are not available" in body(r), body(r)
+appmod.storage = fake
+
+# bob cancels his own booking: the slot is free again and the file is deleted.
 login("bob")
 r = c.post("/cancel", data=slot, follow_redirects=True)
 assert f"Cancelled {when}" in body(r), body(r)
 assert body(r).count(">Book</button>") == 28, body(r)
+assert key not in fake.files, fake.files.keys()
 
 print("ALL SMOKE TESTS PASSED")

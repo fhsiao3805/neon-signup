@@ -1,9 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Sign-up sheet{% endblock %}
+{% macro file_link(cell) %}
+  {%- if cell.attachment %}<a class="file" href="{{ url_for('attachment', booking_id=cell.booking_id) }}" target="_blank" rel="noopener">{{ cell.attachment }}</a>{% endif -%}
+{% endmacro %}
 {% block content %}
   <h1>Sign-up sheet</h1>
   <p>Office hours run Monday to Sunday, 2:00 to 4:00 pm, in half-hour slots.
-    {% if g.is_admin %}You are the administrator and can see who booked each slot.{% endif %}
+    {% if attachments_enabled %}You can attach a PDF or an image of up to 5 MB to a booking of yours.{% endif %}
+    {% if g.is_admin %}You are the administrator and can see who booked each slot{% if attachments_enabled %} and open the files attached to it{% endif %}.{% endif %}
   </p>
 
   <div class="weeknav">
@@ -31,8 +35,10 @@
               {% if cell.past %}
                 {% if cell.status == 'mine' %}
                   <span>Yours</span>
+                  {{ file_link(cell) }}
                 {% elif cell.status == 'taken' and g.is_admin %}
                   <span>Taken by <strong>{{ cell.username }}</strong></span>
+                  {{ file_link(cell) }}
                 {% elif cell.status == 'taken' %}
                   <span>Taken</span>
                 {% else %}
@@ -51,8 +57,18 @@
                   <input type="hidden" name="start" value="{{ cell.start }}">
                   <button type="submit">Cancel</button>
                 </form>
+                {{ file_link(cell) }}
+                {% if attachments_enabled %}
+                  <form class="attach" method="post" action="{{ url_for('attach') }}" enctype="multipart/form-data">
+                    <input type="hidden" name="day" value="{{ cell.day.isoformat() }}">
+                    <input type="hidden" name="start" value="{{ cell.start }}">
+                    <input type="file" name="file" accept="application/pdf,image/png,image/jpeg,image/gif,image/webp" required aria-label="File to attach">
+                    <button type="submit">{% if cell.attachment %}Replace file{% else %}Attach file{% endif %}</button>
+                  </form>
+                {% endif %}
               {% elif g.is_admin %}
                 <span>Taken by <strong>{{ cell.username }}</strong></span>
+                {{ file_link(cell) }}
               {% else %}
                 <span>Taken</span>
               {% endif %}
