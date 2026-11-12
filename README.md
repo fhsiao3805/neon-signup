@@ -21,6 +21,7 @@ The app is configured through a `.env` file next to `app.py` (never commit it):
 | `SITE_NAME` | Title shown in the browser tab and page header |
 | `ADMIN_USERNAME` | The user who can see who booked each slot |
 | `TIMEZONE` | Optional IANA zone the office hours are in, e.g. `America/Los_Angeles` (default: the system zone) |
+| `ATTACHMENTS_BUCKET` | Optional private Cloud Storage bucket for the PDFs and images (up to 5 MB) attached to bookings. Only a booking's owner and the administrator can open its file. Without it, attachments are switched off. Running locally with it needs Google Cloud credentials: `gcloud auth application-default login` |
 
 `python smoke_test.py` runs the end-to-end checks in a throwaway schema of the same database. If `TEST_DATABASE_URL` is set, it uses that database instead of `DATABASE_URL`.
 

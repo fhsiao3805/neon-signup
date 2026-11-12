@@ -1,6 +1,7 @@
 import os
 from datetime import date, datetime, time, timedelta
 from functools import wraps
+from io import BytesIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -8,16 +9,20 @@ import psycopg
 from dotenv import load_dotenv
 from flask import (
     Flask,
+    abort,
     flash,
     g,
     redirect,
     render_template,
     request,
+    send_file,
     session,
     url_for,
 )
 from psycopg.rows import dict_row
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -42,9 +47,18 @@ ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "").strip()
 # IANA zone the office hours are in, e.g. "America/Los_Angeles"; defaults to the system zone.
 TIMEZONE = os.environ.get("TIMEZONE", "").strip()
 TZ = ZoneInfo(TIMEZONE) if TIMEZONE else None
+# Private Cloud Storage bucket for files attached to bookings. Without it,
+# attachments are switched off and the rest of the site works as before.
+ATTACHMENTS_BUCKET = os.environ.get("ATTACHMENTS_BUCKET", "").strip()
+
+MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024  # 5 MB
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = SECRET_KEY
+# Refuse request bodies much larger than an attachment before reading them;
+# the extra room is for the rest of the form. The exact 5 MB limit is
+# checked in attach().
+app.config["MAX_CONTENT_LENGTH"] = MAX_ATTACHMENT_BYTES + 64 * 1024
 
 
 @app.context_processor
@@ -91,6 +105,9 @@ def init_db():
             )
             """
         )
+        # Name of the file attached to the booking, if any. The file itself is
+        # in ATTACHMENTS_BUCKET, under attachment_key(booking id).
+        db.execute("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attachment TEXT")
 
 
 def migrate_weekday_bookings(db):
@@ -175,6 +192,92 @@ def parse_slot(form):
     if day is None or day.weekday() >= len(DAYS) or start not in SLOT_TIMES:
         return None
     return day, start
+
+
+# --- Attachments ------------------------------------------------------------
+# A booking's owner may attach one PDF or image of at most 5 MB to it; a new
+# upload replaces the old file. The type is decided from the file's first
+# bytes, never from its name or from what the browser claims it is.
+
+ATTACHMENT_TYPES = [
+    # (content type, extension, test on the file's first bytes)
+    ("application/pdf", ".pdf", lambda b: b.startswith(b"%PDF-")),
+    ("image/png", ".png", lambda b: b.startswith(b"\x89PNG\r\n\x1a\n")),
+    ("image/jpeg", ".jpg", lambda b: b.startswith(b"\xff\xd8\xff")),
+    ("image/gif", ".gif", lambda b: b.startswith((b"GIF87a", b"GIF89a"))),
+    ("image/webp", ".webp", lambda b: b[:4] == b"RIFF" and b[8:12] == b"WEBP"),
+]
+
+
+def detect_type(data):
+    """Return (content type, extension) for a PDF or image, else None."""
+    for content_type, ext, matches in ATTACHMENT_TYPES:
+        if matches(data):
+            return content_type, ext
+    return None
+
+
+def clean_filename(name, ext):
+    """A safe display name for an uploaded file, ending in the real extension."""
+    stem = Path(secure_filename(name or "")).stem[:100] or "attachment"
+    return stem + ext
+
+
+def attachment_key(booking_id):
+    return f"bookings/{booking_id}"
+
+
+class CloudStorage:
+    """The attachments bucket. The client is created on first use, so the app
+    starts (and the tests run) without Google Cloud credentials."""
+
+    def __init__(self, bucket_name):
+        self.bucket_name = bucket_name
+        self._bucket = None
+
+    def bucket(self):
+        if self._bucket is None:
+            from google.cloud import storage as gcs
+
+            self._bucket = gcs.Client().bucket(self.bucket_name)
+        return self._bucket
+
+    def put(self, key, data, content_type):
+        self.bucket().blob(key).upload_from_string(data, content_type=content_type)
+
+    def get(self, key):
+        """Return (bytes, content type), or None if there is no such file."""
+        from google.api_core.exceptions import NotFound
+
+        blob = self.bucket().blob(key)
+        try:
+            data = blob.download_as_bytes()
+        except NotFound:
+            return None
+        return data, blob.content_type
+
+    def delete(self, key):
+        from google.api_core.exceptions import NotFound
+
+        try:
+            self.bucket().blob(key).delete()
+        except NotFound:
+            pass
+
+
+# None when ATTACHMENTS_BUCKET is not set; the tests replace it with a fake.
+storage = CloudStorage(ATTACHMENTS_BUCKET) if ATTACHMENTS_BUCKET else None
+
+
+@app.context_processor
+def inject_attachments_enabled():
+    return {"attachments_enabled": storage is not None}
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def too_large(_exc):
+    flash("That file is too large. The limit is 5 MB.")
+    return redirect(url_for("sheet"))
 
 
 def is_admin(user):
@@ -284,7 +387,7 @@ def sheet():
 
     rows = get_db().execute(
         """
-        SELECT b.day, b.start, b.user_id, u.username
+        SELECT b.id, b.day, b.start, b.user_id, b.attachment, u.username
         FROM bookings b JOIN users u ON u.id = b.user_id
         WHERE b.day BETWEEN %s AND %s
         """,
@@ -311,6 +414,8 @@ def sheet():
                     "status": status,
                     "past": is_past(day, start),
                     "username": booking["username"] if booking else None,
+                    "booking_id": booking["id"] if booking else None,
+                    "attachment": booking["attachment"] if booking else None,
                 }
             )
         grid.append({"start": start, "end": slot_end(start), "cells": cells})
@@ -370,15 +475,92 @@ def cancel():
     db = get_db()
     # Only the person who booked a slot may cancel it.
     deleted = db.execute(
-        "DELETE FROM bookings WHERE day = %s AND start = %s AND user_id = %s",
+        "DELETE FROM bookings WHERE day = %s AND start = %s AND user_id = %s"
+        " RETURNING id, attachment",
         (day, start, g.user["id"]),
-    ).rowcount
+    ).fetchone()
     db.commit()
     if deleted:
+        # The booking is gone, so its file goes too.
+        if deleted["attachment"] and storage is not None:
+            storage.delete(attachment_key(deleted["id"]))
         flash(f"Cancelled {format_day(day)} at {format_time(start)}.")
     else:
         flash("You have no booking in that slot.")
     return back
+
+
+@app.route("/attach", methods=["POST"])
+@login_required
+def attach():
+    if storage is None:
+        flash("Attachments are not available.")
+        return redirect(url_for("sheet"))
+    slot = parse_slot(request.form)
+    if slot is None:
+        flash("That is not a valid slot.")
+        return redirect(url_for("sheet"))
+    day, start = slot
+    back = redirect(url_for("sheet", week=week_start(day).isoformat()))
+    if is_past(day, start):
+        flash("That slot is in the past.")
+        return back
+
+    db = get_db()
+    # Only the booking's owner may attach a file to it.
+    booking = db.execute(
+        "SELECT id FROM bookings WHERE day = %s AND start = %s AND user_id = %s",
+        (day, start, g.user["id"]),
+    ).fetchone()
+    if booking is None:
+        flash("You have no booking in that slot.")
+        return back
+
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        flash("Choose a file to attach.")
+        return back
+    data = upload.read(MAX_ATTACHMENT_BYTES + 1)
+    if len(data) > MAX_ATTACHMENT_BYTES:
+        flash("That file is too large. The limit is 5 MB.")
+        return back
+    kind = detect_type(data)
+    if kind is None:
+        flash("Only PDF files and images (PNG, JPEG, GIF, WebP) can be attached.")
+        return back
+    content_type, ext = kind
+    name = clean_filename(upload.filename, ext)
+
+    storage.put(attachment_key(booking["id"]), data, content_type)
+    db.execute("UPDATE bookings SET attachment = %s WHERE id = %s", (name, booking["id"]))
+    db.commit()
+    flash(f"Attached {name} to {format_day(day)} at {format_time(start)}.")
+    return back
+
+
+@app.route("/attachment/<int:booking_id>")
+@login_required
+def attachment(booking_id):
+    booking = get_db().execute(
+        "SELECT user_id, attachment FROM bookings WHERE id = %s", (booking_id,)
+    ).fetchone()
+    # Only the booking's owner and the administrator may open the file. Anyone
+    # else gets the same answer as for a booking that does not exist.
+    allowed = booking is not None and (booking["user_id"] == g.user["id"] or g.is_admin)
+    if not allowed or not booking["attachment"] or storage is None:
+        abort(404)
+    found = storage.get(attachment_key(booking_id))
+    if found is None:
+        abort(404)
+    data, content_type = found
+    response = send_file(
+        BytesIO(data),
+        mimetype=content_type or "application/octet-stream",
+        download_name=booking["attachment"],
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 init_db()

@@ -5,7 +5,8 @@
 #   DATABASE_URL, SECRET_KEY         -> Secret Manager secrets of the same name.
 #                                       Created from .env on first run; secrets
 #                                       that already exist are left alone.
-#   SITE_NAME, ADMIN_USERNAME, TIMEZONE -> plain environment variables on the service.
+#   SITE_NAME, ADMIN_USERNAME, TIMEZONE, ATTACHMENTS_BUCKET
+#                                    -> plain environment variables on the service.
 #
 # Usage, from the app folder, after `gcloud auth login`:
 #   bash deploy.sh                       deploy signup-messi to gcloud's current project
@@ -94,6 +95,8 @@ step "3. Deploy $APP to $REGION"
 ENV_VARS="^|^SITE_NAME=$(env_value SITE_NAME)|ADMIN_USERNAME=$(env_value ADMIN_USERNAME)"
 TIMEZONE=$(env_value TIMEZONE)
 [ -n "$TIMEZONE" ] && ENV_VARS="$ENV_VARS|TIMEZONE=$TIMEZONE"
+ATTACHMENTS_BUCKET=$(env_value ATTACHMENTS_BUCKET)
+[ -n "$ATTACHMENTS_BUCKET" ] && ENV_VARS="$ENV_VARS|ATTACHMENTS_BUCKET=$ATTACHMENTS_BUCKET"
 gcloud run deploy "$APP" --source . --project "$PROJECT" --region "$REGION" \
     --allow-unauthenticated --quiet \
     --set-secrets="DATABASE_URL=DATABASE_URL:latest,SECRET_KEY=SECRET_KEY:latest" \
