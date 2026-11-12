@@ -119,6 +119,7 @@ c.post("/register", data={"username": "bob", "password": "pw"})
 # Work in next week, so every slot is still in the future.
 monday = this_monday + timedelta(days=7)
 wed = monday + timedelta(days=2)
+sunday = monday + timedelta(days=6)
 week = f"/sheet?week={monday.isoformat()}"
 when = f"{appmod.format_day(wed)} at 2:30 pm"
 slot = {"day": wed.isoformat(), "start": "14:30"}
@@ -129,8 +130,10 @@ r = c.get("/sheet")
 assert r.status_code == 200 and "You are the administrator" in body(r), body(r)
 assert "Week of" in body(r) and "Next week" in body(r), body(r)
 r = c.get(week)
-assert th_count(body(r)) == 1 + 5 + 4, body(r)              # corner, 5 days, 4 time rows
-assert body(r).count(">Book</button>") == 20, body(r)        # all 20 slots free
+assert th_count(body(r)) == 1 + 7 + 4, body(r)              # corner, 7 days, 4 time rows
+assert body(r).count(">Book</button>") == 28, body(r)        # all 28 slots free
+assert re.search(r"<th[^>]*>Monday<", body(r)).start() < re.search(r"<th[^>]*>Sunday<", body(r)).start(), body(r)
+assert f"{sunday:%b} {sunday.day}" in body(r), body(r)       # the week ends on Sunday
 assert "2:00 pm" in body(r) and "4:00 pm" in body(r), body(r)
 assert f"{wed:%b} {wed.day}" in body(r), body(r)             # real dates in the header
 assert "This week" in body(r), body(r)                       # link back from another week
@@ -147,14 +150,39 @@ assert "You are the administrator" not in body(r), body(r)
 r = c.post("/book", data=slot, follow_redirects=True)
 assert f"Booked {when}" in body(r), body(r)
 assert "Yours" in body(r) and ">Cancel</button>" in body(r), body(r)
-assert body(r).count(">Book</button>") == 19, body(r)
+assert body(r).count(">Book</button>") == 27, body(r)
+
+# Sunday is part of the week: bob can book a Sunday slot, it shows in the
+# same week as Monday, and he can cancel it again.
+sunday_slot = {"day": sunday.isoformat(), "start": "15:00"}
+r = c.post("/book", data=sunday_slot, follow_redirects=True)
+assert f"Booked {appmod.format_day(sunday)} at 3:00 pm" in body(r), body(r)
+assert f"Week of {appmod.format_day(monday)}" in body(r), body(r)
+assert body(r).count(">Cancel</button>") == 2, body(r)
+assert body(r).count(">Book</button>") == 26, body(r)
+with psycopg.connect(appmod.DATABASE_URL) as conn:
+    row = conn.execute("SELECT day FROM bookings WHERE start = '15:00'").fetchone()
+assert row == (sunday,) and row[0].weekday() == 6, row
+r = c.post("/book", data=sunday_slot, follow_redirects=True)
+assert "already been taken" in body(r), body(r)
+r = c.post("/cancel", data=sunday_slot, follow_redirects=True)
+assert f"Cancelled {appmod.format_day(sunday)} at 3:00 pm" in body(r), body(r)
+assert body(r).count(">Book</button>") == 27, body(r)
+
+# A Saturday slot can be booked too.
+saturday = monday + timedelta(days=5)
+r = c.post("/book", data={"day": saturday.isoformat(), "start": "14:30"}, follow_redirects=True)
+assert f"Booked {appmod.format_day(saturday)} at 2:30 pm" in body(r), body(r)
+c.post("/cancel", data={"day": saturday.isoformat(), "start": "14:30"})
+
+# A Sunday in the past cannot be booked.
+past_sunday = this_monday - timedelta(days=1)
+r = c.post("/book", data={"day": past_sunday.isoformat(), "start": "14:30"}, follow_redirects=True)
+assert "in the past" in body(r), body(r)
 
 # Booking the same slot twice, an invalid slot, or a past slot fails.
 r = c.post("/book", data=slot, follow_redirects=True)
 assert "already been taken" in body(r), body(r)
-saturday = monday + timedelta(days=5)
-r = c.post("/book", data={"day": saturday.isoformat(), "start": "14:30"}, follow_redirects=True)
-assert "not a valid slot" in body(r), body(r)
 r = c.post("/book", data={"day": "not-a-date", "start": "14:30"}, follow_redirects=True)
 assert "not a valid slot" in body(r), body(r)
 r = c.post("/book", data={"day": wed.isoformat(), "start": "16:00"}, follow_redirects=True)
@@ -181,6 +209,6 @@ assert "Taken by <strong>bob</strong>" in body(r), body(r)
 login("bob")
 r = c.post("/cancel", data=slot, follow_redirects=True)
 assert f"Cancelled {when}" in body(r), body(r)
-assert body(r).count(">Book</button>") == 20, body(r)
+assert body(r).count(">Book</button>") == 28, body(r)
 
 print("ALL SMOKE TESTS PASSED")
