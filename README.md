@@ -22,7 +22,9 @@ The app is configured through a `.env` file next to `app.py` (never commit it):
 | `ADMIN_USERNAME` | The user who can see who booked each slot |
 | `TIMEZONE` | Optional IANA zone the office hours are in, e.g. `America/Los_Angeles` (default: the system zone) |
 
-`python smoke_test.py` runs the end-to-end checks in a throwaway schema of the same database.
+`python smoke_test.py` runs the end-to-end checks in a throwaway schema of the same database. If `TEST_DATABASE_URL` is set, it uses that database instead of `DATABASE_URL`.
+
+GitHub Actions (`.github/workflows/tests.yml`) runs the smoke test on every pull request and every push to `main`. It starts its own PostgreSQL inside the job and points `TEST_DATABASE_URL` at it, so CI never connects to Neon. The workflow only runs tests; it does not deploy.
 
 ## Deploying to Cloud Run
 

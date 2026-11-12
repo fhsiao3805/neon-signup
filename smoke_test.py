@@ -12,6 +12,14 @@ sys.path.insert(0, os.getcwd())
 import psycopg
 from psycopg.conninfo import make_conninfo
 
+# If TEST_DATABASE_URL is set (CI sets it to a Postgres started inside the
+# job), run against that database instead of DATABASE_URL. This has to happen
+# before app is imported: app reads DATABASE_URL and creates its tables at
+# import time, and load_dotenv does not override variables that are already set.
+test_database_url = os.environ.get("TEST_DATABASE_URL", "").strip()
+if test_database_url:
+    os.environ["DATABASE_URL"] = test_database_url
+
 import app as appmod
 
 # Run against a throwaway schema in the configured database so the smoke

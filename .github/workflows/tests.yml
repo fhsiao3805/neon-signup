@@ -1,0 +1,50 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+
+    # A Postgres of the job's own, thrown away when the job ends. The tests
+    # use only this database; no Neon credentials are available to the job.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: signup
+          POSTGRES_PASSWORD: signup
+          POSTGRES_DB: signup_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U signup -d signup_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://signup:signup@localhost:5432/signup_test
+      # app.py refuses to start without these; the values only matter here.
+      DATABASE_URL: postgresql://signup:signup@localhost:5432/signup_test
+      SECRET_KEY: ci-only-not-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run smoke test
+        run: python smoke_test.py
