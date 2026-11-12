@@ -48,3 +48,48 @@ jobs:
 
       - name: Run smoke test
         run: python smoke_test.py
+
+  deploy:
+    # Only for a push to main (never for pull requests), and only once the
+    # smoke test has passed.
+    needs: smoke-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # One deploy at a time; a newer push waits for the running deploy.
+    concurrency:
+      group: deploy-signup-deployment-123
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # The key goes to the runner's temp folder, outside the checkout, so
+      # `--source .` cannot upload it and it can never end up in the
+      # repository. It is passed through an environment variable, never
+      # pasted into the script, and deleted when the job ends.
+      - name: Sign in to Google Cloud
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        run: |
+          if [ -z "$GCP_CREDENTIALS" ]; then
+            echo "::error::The GCP_CREDENTIALS secret is not set for this repository."
+            exit 1
+          fi
+          KEY_FILE="$RUNNER_TEMP/gcp-key.json"
+          ( umask 077; printf '%s' "$GCP_CREDENTIALS" > "$KEY_FILE" )
+          gcloud auth activate-service-account --key-file="$KEY_FILE" --quiet
+          echo "KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        run: >
+          gcloud run deploy signup-deployment-123 --source .
+          --project signup-deployment-123 --region us-west1
+          --allow-unauthenticated --quiet
+
+      - name: Remove key
+        if: always()
+        run: rm -f "${KEY_FILE:-$RUNNER_TEMP/gcp-key.json}"
