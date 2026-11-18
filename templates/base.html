@@ -54,6 +54,18 @@
     table.sheet td form.attach input[type=file] { display: block; width: 100%; font-size: 0.75rem; font-weight: 400; }
     .weeknav { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.25rem; max-width: 64rem; width: calc(100% - 2rem); margin: 0 auto 0.75rem; }
     .weeknav strong { flex: 1; text-align: center; }
+    form.ask, .suggestion, .ai-debug { max-width: 64rem; width: calc(100% - 2rem); margin: 0 auto 0.75rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0.75rem 1rem; }
+    form.ask label { margin-top: 0; }
+    .ask-row { display: flex; gap: 0.5rem; align-items: center; }
+    .ask-row input[type=text] { flex: 1; margin-top: 0; }
+    .ask-row button { margin-top: 0; }
+    .ai-mark { color: #8250df; }
+    .suggestion { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; background: #f6f0ff; border-color: #d8c4f5; }
+    .suggestion p { margin: 0; flex: 1; min-width: 12rem; }
+    .suggestion button { margin-top: 0; }
+    .ai-debug summary { cursor: pointer; font-weight: 600; }
+    .ai-debug h3 { font-size: 0.95rem; margin: 0.75rem 0 0.25rem; }
+    .ai-debug pre { background: #f0f3f7; padding: 0.6rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
     @media (max-width: 40rem) { nav { flex-wrap: wrap; gap: 0.75rem 1rem; } table.sheet th, table.sheet td { padding: 0.4rem 0.25rem; font-size: 0.85rem; } }
   </style>
 </head>

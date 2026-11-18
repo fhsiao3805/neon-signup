@@ -17,6 +17,43 @@
     <a href="{{ url_for('sheet', week=next_week.isoformat()) }}">Next week &rarr;</a>
   </div>
 
+  {% if ai_enabled %}
+    <form class="ask" method="post" action="{{ url_for('suggest') }}">
+      <input type="hidden" name="week" value="{{ days[0].isoformat() }}">
+      <label for="wish"><span class="ai-mark" aria-hidden="true">&#10024;</span> Ask AI to find a slot this week</label>
+      <div class="ask-row">
+        <input type="text" id="wish" name="wish" maxlength="300" required
+               placeholder="e.g. any time Thursday afternoon? or the earliest slot this week"
+               value="{{ suggestion.wish if suggestion else '' }}">
+        <button type="submit">Ask</button>
+      </div>
+    </form>
+  {% endif %}
+
+  {% if suggestion %}
+    <div class="suggestion">
+      <span class="ai-mark" aria-hidden="true">&#10024;</span>
+      <p>{{ suggestion.message }}</p>
+      {% if suggestion.slot %}
+        {% set day, start = suggestion.slot %}
+        <form method="post" action="{{ url_for('book') }}">
+          <input type="hidden" name="day" value="{{ day.isoformat() }}">
+          <input type="hidden" name="start" value="{{ start }}">
+          <button type="submit">Book {{ day | dayname }} at {{ start | ampm }}</button>
+        </form>
+      {% endif %}
+    </div>
+    {% if suggestion.debug %}
+      <details class="ai-debug" open>
+        <summary>Debug: messages sent to and from Claude</summary>
+        <h3>Sent to Claude</h3>
+        <pre>{{ suggestion.debug.sent }}</pre>
+        <h3>Received from Claude</h3>
+        <pre>{{ suggestion.debug.received }}</pre>
+      </details>
+    {% endif %}
+  {% endif %}
+
   <table class="sheet">
     <thead>
       <tr>

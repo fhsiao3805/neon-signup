@@ -321,4 +321,84 @@ assert f"Cancelled {when}" in body(r), body(r)
 assert body(r).count(">Book</button>") == 28, body(r)
 assert key not in fake.files, fake.files.keys()
 
+# --- Ask AI -----------------------------------------------------------------
+# A stand-in for Claude that records what it was given and returns a set answer.
+
+class FakeAdvisor:
+    def __init__(self, answer):
+        self.answer = answer
+        self.calls = []
+
+    def suggest(self, wish, free_slots):
+        self.calls.append((wish, free_slots))
+        return (*self.answer(free_slots), {"sent": "SENT-TEXT", "received": "RECEIVED-TEXT"})
+
+thursday = monday + timedelta(days=3)
+pick = FakeAdvisor(lambda free: ((thursday, "15:00"), "Thursday at 3 suits you."))
+appmod.advisor = pick
+appmod.AI_DEBUG = False
+
+login("bob")
+c.post("/book", data=slot)  # bob takes Wednesday 2:30 again
+r = c.get(week)
+assert 'action="/suggest"' in body(r), body(r)
+
+# Claude is given the request and every free slot of the week, in time order,
+# and its pick is shown with a Book button. Nothing is booked yet.
+r = c.post("/suggest", data={"week": monday.isoformat(), "wish": "  Thursday   afternoon? "})
+wish, free = pick.calls[-1]
+assert wish == "Thursday afternoon?", wish
+assert len(free) == 27 and (wed, "14:30") not in free and free == sorted(free), free
+assert "Thursday at 3 suits you." in body(r), body(r)
+assert f">Book {appmod.format_day(thursday)} at 3:00 pm</button>" in body(r), body(r)
+assert 'value="Thursday afternoon?"' in body(r), body(r)
+assert body(r).count(">Book</button>") == 27, body(r)
+assert "SENT-TEXT" not in body(r), body(r)               # debug off: no messages shown
+with psycopg.connect(appmod.DATABASE_URL) as conn:
+    n = conn.execute("SELECT count(*) FROM bookings WHERE day = %s", (thursday,)).fetchone()[0]
+assert n == 0, n
+
+# With AI_DEBUG on, the messages to and from Claude are shown.
+appmod.AI_DEBUG = True
+r = c.post("/suggest", data={"week": monday.isoformat(), "wish": "Thursday"})
+assert "SENT-TEXT" in body(r) and "RECEIVED-TEXT" in body(r), body(r)
+appmod.AI_DEBUG = False
+
+# When nothing fits there is no Book button for a suggestion; the text is escaped.
+appmod.advisor = FakeAdvisor(lambda free: (None, "Nothing fits <b>then</b>."))
+r = c.post("/suggest", data={"week": monday.isoformat(), "wish": "midnight"})
+assert "Nothing fits &lt;b&gt;then&lt;/b&gt;." in body(r), body(r)
+assert ">Book " not in body(r).replace(">Book</button>", ""), body(r)
+
+# Empty or overlong requests are refused without asking Claude.
+calls = len(appmod.advisor.calls)
+r = c.post("/suggest", data={"week": monday.isoformat(), "wish": "   "}, follow_redirects=True)
+assert "Type when you would like to come" in body(r), body(r)
+r = c.post("/suggest", data={"week": monday.isoformat(), "wish": "x" * 301}, follow_redirects=True)
+assert "under 300 characters" in body(r), body(r)
+assert len(appmod.advisor.calls) == calls
+
+# A week with no free slots left does not ask Claude either.
+r = c.post("/suggest", data={"week": past_monday.isoformat(), "wish": "anything"})
+assert "no free slots left" in body(r) and len(appmod.advisor.calls) == calls, body(r)
+
+# The real advisor never offers a slot that is not in the free list.
+class FakeMessages:
+    def parse(self, **kwargs):
+        from types import SimpleNamespace
+        return SimpleNamespace(stop_reason="end_turn", to_json=lambda **k: "{}",
+                               parsed_output=appmod.SlotChoice(slot="2000-01-01T14:00", message="Go then."))
+real = appmod.SlotAdvisor("test-key")
+real._client = type("C", (), {"beta": type("B", (), {"messages": FakeMessages()})()})()
+got, message, _ = real.suggest("whenever", [(thursday, "15:00")])
+assert got is None and "could not find" in message, (got, message)
+
+# Without ANTHROPIC_API_KEY the box is switched off.
+appmod.advisor = None
+r = c.get(week)
+assert 'action="/suggest"' not in body(r), body(r)
+r = c.post("/suggest", data={"week": monday.isoformat(), "wish": "Thursday"}, follow_redirects=True)
+assert "assistant is not available" in body(r), body(r)
+c.post("/cancel", data=slot)
+
 print("ALL SMOKE TESTS PASSED")
