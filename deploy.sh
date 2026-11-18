@@ -2,7 +2,8 @@
 # deploy.sh — deploy this app to Cloud Run, with its secrets in Secret Manager.
 #
 # Reads the values from .env but never uploads .env itself (see .gcloudignore):
-#   DATABASE_URL, SECRET_KEY         -> Secret Manager secrets of the same name.
+#   DATABASE_URL, SECRET_KEY,
+#   ANTHROPIC_API_KEY                -> Secret Manager secrets of the same name.
 #                                       Created from .env on first run; secrets
 #                                       that already exist are left alone.
 #   SITE_NAME, ADMIN_USERNAME, TIMEZONE, ATTACHMENTS_BUCKET
@@ -66,7 +67,7 @@ SA="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
 step "2. Secrets in Secret Manager"
 gcloud services enable secretmanager.googleapis.com --project "$PROJECT" --quiet \
   || fail "could not enable the Secret Manager API"
-for NAME in DATABASE_URL SECRET_KEY; do
+for NAME in DATABASE_URL SECRET_KEY ANTHROPIC_API_KEY; do
   VALUE=$(env_value "$NAME")
   [ -z "$VALUE" ] && fail "$NAME is empty in .env"
   if gcloud secrets describe "$NAME" --project "$PROJECT" >/dev/null 2>&1; then
@@ -88,7 +89,7 @@ for NAME in DATABASE_URL SECRET_KEY; do
       --condition=None --quiet >/dev/null \
     || fail "could not let $SA read $NAME"
 done
-echo "$SA can read both secrets"
+echo "$SA can read all three secrets"
 
 step "3. Deploy $APP to $REGION"
 # ^|^ makes | the separator, so values may contain commas.
@@ -99,7 +100,7 @@ ATTACHMENTS_BUCKET=$(env_value ATTACHMENTS_BUCKET)
 [ -n "$ATTACHMENTS_BUCKET" ] && ENV_VARS="$ENV_VARS|ATTACHMENTS_BUCKET=$ATTACHMENTS_BUCKET"
 gcloud run deploy "$APP" --source . --project "$PROJECT" --region "$REGION" \
     --allow-unauthenticated --quiet \
-    --set-secrets="DATABASE_URL=DATABASE_URL:latest,SECRET_KEY=SECRET_KEY:latest" \
+    --set-secrets="DATABASE_URL=DATABASE_URL:latest,SECRET_KEY=SECRET_KEY:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest" \
     --set-env-vars="$ENV_VARS" \
   || fail "deploy failed. Read the message above."
 
